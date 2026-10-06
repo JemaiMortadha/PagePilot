@@ -1,0 +1,40 @@
+# Environment variables (DO NOT COMMIT)
+.env
+.env.local
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+venv/
+.venv/
+env/
+
+# Application Logs
+logs/
+*.log
+
+# Application Data & Caches
+seen_posts.json
+
+# Image Outputs
+output/
+test_image_*.jpg
+test_image_*.jpeg
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
