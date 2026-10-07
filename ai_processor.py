@@ -90,6 +90,8 @@ def _gemini_vision(image: Image.Image, prompt: str) -> str:
                     prompt,
                 ],
             )
+            import quota_tracker
+            quota_tracker.record_gemini_calls(1)
             return response.text.strip()
         except Exception as e:
             from google.genai.errors import APIError
@@ -116,6 +118,8 @@ def _gemini_text(system: str, user: str) -> str:
                 model=GEMINI_MODEL,
                 contents=f"{system}\n\n{user}" if system else user,
             )
+            import quota_tracker
+            quota_tracker.record_gemini_calls(1)
             return response.text.strip()
         except Exception as e:
             from google.genai.errors import APIError

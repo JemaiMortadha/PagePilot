@@ -46,13 +46,23 @@ def run_pipeline() -> None:
 
     # ── Step 1: Scrape ───────────────────────────────────────
     try:
+        import quota_tracker
         posts = fetch_new_image_posts()
+        import config
+        quota_tracker.record_apify_runs(len(config.COMPETITOR_PAGES) * config.POSTS_TO_CHECK)
     except Exception as e:
         log.error(f"Scraping failed: {e}")
         return
 
     if not posts:
         log.info("No new image posts found. Done.")
+        
+        # Send empty report
+        import notifier
+        report_body = quota_tracker.get_usage_report()
+        if config.GMAIL_ADDRESS and config.GMAIL_APP_PASSWORD:
+            notifier.send_email_report(f"PagePilot Report: 0 posts published", f"Cycle finished: 0 new posts.\n\n{report_body}")
+        
         return
 
     published_count = 0
@@ -110,6 +120,13 @@ def run_pipeline() -> None:
             # IMPORTANT: Only mark as seen AFTER successful publish
             mark_post_seen(post['page_url'], post['post_id'])
             published_count += 1
+            
+            # Clean up the generated image to save space
+            try:
+                Path(image_path).unlink(missing_ok=True)
+                log.info(f"🗑️ Cleaned up image: {image_path}")
+            except Exception as e:
+                log.warning(f"Could not delete image {image_path}: {e}")
         else:
             log.error("❌ Publish returned no post ID")
 
@@ -120,13 +137,29 @@ def run_pipeline() -> None:
 
     log.info(f"\n✅ Done — published {published_count}/{len(posts)} posts")
 
+    # Send Notification
+    import quota_tracker
+    import notifier
+    import config
+    
+    report_body = quota_tracker.get_usage_report()
+    summary = f"Cycle finished: {published_count}/{len(posts)} new posts published."
+    full_email = f"{summary}\n\n{report_body}"
+    
+    log.info(f"Generated Quota Report:\n{report_body}")
+    
+    if config.GMAIL_ADDRESS and config.GMAIL_APP_PASSWORD:
+        notifier.send_email_report(f"PagePilot Report: {published_count} posts published", full_email)
+    else:
+        log.info("Check .env to enable Gmail notifications.")
+
 
 def main_loop():
     """
     Bullet-proof loop that runs indefinitely.
-    Checks for new posts every 1 hour.
+    Checks for new posts every 6 hours.
     """
-    CHECK_INTERVAL_SECONDS = 3600  # 1 hour
+    CHECK_INTERVAL_SECONDS = 21600  # 6 hours
     
     log.info("Starting FB Page Automation as a continuous background service.")
     log.info(f"The pipeline will wake up every {CHECK_INTERVAL_SECONDS/3600} hour(s) to check for updates.")
@@ -142,7 +175,7 @@ def main_loop():
             log.error(f"CRITICAL ERROR in main loop: {e}")
             log.debug(traceback.format_exc())
             
-        log.info(f"Sleeping for 1 hour until the next check...")
+        log.info(f"Sleeping for 6 hours until the next check...")
         try:
             time.sleep(CHECK_INTERVAL_SECONDS)
         except KeyboardInterrupt:
@@ -150,4 +183,8 @@ def main_loop():
             break
 
 if __name__ == "__main__":
-    main_loop()
+    if len(sys.argv) > 1 and sys.argv[1] == "--once":
+        log.info("Running a single cycle of the pipeline (--once flag used).")
+        run_pipeline()
+    else:
+        main_loop()

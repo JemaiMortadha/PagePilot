@@ -23,7 +23,7 @@ COMPETITOR_PAGES = [p.strip() for p in _raw.split(",") if p.strip()]
 PAGE_NAME = os.getenv("PAGE_NAME", "MyPage")
 
 # ── Behaviour ────────────────────────────────────────────────
-POSTS_TO_CHECK = int(os.getenv("POSTS_TO_CHECK", "5"))
+POSTS_TO_CHECK = int(os.getenv("POSTS_TO_CHECK", "1"))
 DEDUP_HOURS    = int(os.getenv("DEDUP_HOURS", "72"))
 
 # ── Paths ────────────────────────────────────────────────────
@@ -40,4 +40,8 @@ IMAGE_WIDTH  = 1080
 IMAGE_HEIGHT = 1350   # 4:5 ratio — ideal for FB/IG feed
 
 # ── Pollinations.ai (truly free, no key needed) ──────────────
-POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&model=flux&nologo=true&enhance=true"
+POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}?width={w}&height={h}&model=flux-realism&seed=-1"
+
+# ── Notifications (Gmail) ────────────────────────────────────
+GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")

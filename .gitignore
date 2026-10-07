@@ -17,7 +17,7 @@ logs/
 *.log
 
 # Application Data & Caches
-seen_posts.json
+# (Removed seen_posts.json so you can push your seed state)
 
 # Image Outputs
 output/
@@ -38,3 +38,4 @@ test_image_*.jpeg
 .Trashes
 ehthumbs.db
 Thumbs.db
+\n# Facebook session cookies (NEVER commit this)\nfb_cookies.json
