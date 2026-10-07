@@ -84,23 +84,13 @@ def fetch_new_image_posts() -> list[dict]:
             "scrapePosts": True,
         }
 
-        # Use start() + wait_for_finish() instead of call() so we can
-        # cancel the Apify run cleanly if the user presses Ctrl+C.
-        # This prevents orphaned runs from consuming credits in the background.
-        actor_run = client.actor("apify/facebook-posts-scraper").start(run_input=run_input)
-        run_id = actor_run.get("id") if isinstance(actor_run, dict) else getattr(actor_run, "id", None)
-        log.info(f"Apify run started (id={run_id}). Waiting for results...")
-
+        # Use call() which synchronously starts and waits for the run.
+        # This prevents double-billing!
+        log.info("Starting Apify run and waiting for results...")
         try:
             run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
         except KeyboardInterrupt:
-            if run_id:
-                log.warning(f"Interrupted! Cancelling Apify run {run_id} to save quota...")
-                try:
-                    client.run(run_id).abort()
-                    log.info("Apify run cancelled successfully.")
-                except Exception as abort_err:
-                    log.error(f"Could not cancel Apify run: {abort_err}")
+            log.warning("Interrupted! Note: The Apify run may still be processing in the background.")
             raise  # Re-raise so main loop handles the exit cleanly
 
         if run is None:
