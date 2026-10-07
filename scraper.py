@@ -1,10 +1,11 @@
 """
-scraper.py — Monitor competitor Facebook pages for new image posts
-Uses Apify's Facebook Posts Scraper (free $5/mo credits).
+scraper.py — Monitor competitor Facebook pages for new image posts.
+Uses Apify's Facebook Posts Scraper (free $5/mo credits, batched).
+All 8 competitor pages are scraped in a single Apify run to maximize quota efficiency.
 """
 import json
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,14 @@ from apify_client import ApifyClient
 import config
 
 log = logging.getLogger(__name__)
+
+# Phrases that indicate Apify free tier is exhausted for the month
+APIFY_LIMIT_PHRASES = [
+    "monthly usage hard limit exceeded",
+    "usage limit",
+    "hard limit",
+    "payment required",
+]
 
 
 def _load_seen() -> dict:
@@ -36,117 +45,130 @@ def mark_post_seen(page_url: str, post_id: str) -> None:
     Stores the latest processed post ID specifically for this page.
     """
     seen = _load_seen()
-    
-    # We store BOTH the post_id (for global dedup) AND the page URL (so we know the last post per page)
     seen[post_id] = datetime.now(timezone.utc).isoformat()
     seen[f"last_post_{page_url}"] = post_id
-    
     _save_seen(seen)
 
 
 def _is_new(page_url: str, post_id: str, seen: dict) -> bool:
-    """Return True if this post has not been processed recently."""
-    # If we already processed this exact post globally
+    """Return True if this post has not been processed before."""
     if post_id in seen:
         return False
-        
-    # If this post happens to be the EXACT last post we processed for this page
     if seen.get(f"last_post_{page_url}") == post_id:
         return False
-        
     return True
 
 
 def fetch_new_image_posts() -> list[dict]:
     """
-    Scrape all competitor pages and return a list of NEW posts that contain
-    at least one image.
+    Scrape all competitor pages in a single batched Apify run.
+    Returns a list of new image posts found across all pages.
     """
     if not config.APIFY_API_TOKEN:
         raise ValueError("APIFY_API_TOKEN is not set in .env")
 
     client = ApifyClient(config.APIFY_API_TOKEN)
-    seen   = _load_seen()
+    seen = _load_seen()
     new_posts: list[dict] = []
 
-    for page_url in config.COMPETITOR_PAGES:
-        log.info(f"Scraping: {page_url}")
+    start_urls = [{"url": url} for url in config.COMPETITOR_PAGES]
+    log.info(f"Scraping {len(start_urls)} competitor pages in a single batch run...")
+
+    try:
+        run_input = {
+            "startUrls": start_urls,
+            "resultsLimit": config.POSTS_TO_CHECK,  # Apify applies this PER PAGE
+            "scrapeAbout": False,
+            "scrapeReviews": False,
+            "scrapeServices": False,
+            "scrapePosts": True,
+        }
+
+        # Use start() + wait_for_finish() instead of call() so we can
+        # cancel the Apify run cleanly if the user presses Ctrl+C.
+        # This prevents orphaned runs from consuming credits in the background.
+        actor_run = client.actor("apify/facebook-posts-scraper").start(run_input=run_input)
+        run_id = actor_run.get("id") if isinstance(actor_run, dict) else getattr(actor_run, "id", None)
+        log.info(f"Apify run started (id={run_id}). Waiting for results...")
+
         try:
-            run_input = {
-                "startUrls": [{"url": page_url}],
-                "resultsLimit": config.POSTS_TO_CHECK,
-                "scrapeAbout": False,
-                "scrapeReviews": False,
-                "scrapeServices": False,
-                "scrapePosts": True,
-            }
-
             run = client.actor("apify/facebook-posts-scraper").call(run_input=run_input)
-            if run is None:
-                log.error(f"Actor run returned None for {page_url}")
+        except KeyboardInterrupt:
+            if run_id:
+                log.warning(f"Interrupted! Cancelling Apify run {run_id} to save quota...")
+                try:
+                    client.run(run_id).abort()
+                    log.info("Apify run cancelled successfully.")
+                except Exception as abort_err:
+                    log.error(f"Could not cancel Apify run: {abort_err}")
+            raise  # Re-raise so main loop handles the exit cleanly
+
+        if run is None:
+            log.error("Actor run returned None.")
+            return new_posts
+
+        if isinstance(run, dict):
+            dataset_id = run.get("defaultDatasetId") or run.get("default_dataset_id")
+        else:
+            dataset_id = run.default_dataset_id
+
+        if not dataset_id:
+            log.error("Could not get dataset ID from Apify run.")
+            return new_posts
+
+        dataset = client.dataset(dataset_id)
+
+        for item in dataset.iterate_items():
+            post_id   = str(item.get("postId") or item.get("id", ""))
+            page_url  = item.get("pageUrl") or item.get("url", "").split("/posts/")[0]
+            media     = item.get("media") or []
+            caption   = item.get("text") or item.get("message") or ""
+            posted_at = item.get("time") or item.get("timestamp") or ""
+
+            if not media:
                 continue
-                
-            if isinstance(run, dict):
-                dataset_id = run.get("defaultDatasetId") or run.get("default_dataset_id")
+
+            img_url = ""
+            first = media[0]
+            if isinstance(first, dict):
+                photo_image = first.get("photo_image") or {}
+                img_url = photo_image.get("uri") or first.get("thumbnail") or ""
+                typename = first.get("__typename", "Photo")
+                if typename not in ("Photo", ""):
+                    continue
             else:
-                dataset_id = run.default_dataset_id
-                
-            if not dataset_id:
-                log.error(f"Could not get dataset ID for {page_url}")
+                img_url = str(first)
+
+            if not img_url or not img_url.startswith("http"):
                 continue
-                
-            dataset = client.dataset(dataset_id)
-            
-            # We want to process only the newest unseen posts.
-            # Apify returns them roughly newest-first. We collect all unseen ones.
-            page_new_posts = []
 
-            for item in dataset.iterate_items():
-                post_id   = str(item.get("postId") or item.get("id", ""))
-                media     = item.get("media") or []
-                caption   = item.get("text") or item.get("message") or ""
-                posted_at = item.get("time") or item.get("timestamp") or ""
-
-                if not media:
-                    continue
-
-                img_url = ""
-                first = media[0]
-                if isinstance(first, dict):
-                    photo_image = first.get("photo_image") or {}
-                    img_url = (
-                        photo_image.get("uri")
-                        or first.get("thumbnail")
-                        or ""
-                    )
-                    typename = first.get("__typename", "Photo")
-                    if typename not in ("Photo", ""):
-                        continue
+            if not page_url.startswith("http"):
+                author = item.get("author", {})
+                if isinstance(author, dict) and author.get("url"):
+                    page_url = author.get("url").split("?")[0]
                 else:
-                    img_url = str(first)
+                    page_url = "unknown_page"
 
-                if not img_url or not img_url.startswith("http"):
-                    continue
+            if _is_new(page_url, post_id, seen):
+                new_posts.append({
+                    "post_id":   post_id,
+                    "page_url":  page_url,
+                    "image_url": img_url,
+                    "caption":   caption,
+                    "posted_at": posted_at,
+                })
 
-                if _is_new(page_url, post_id, seen):
-                    page_new_posts.append({
-                        "post_id":   post_id,
-                        "page_url":  page_url,
-                        "image_url": img_url,
-                        "caption":   caption,
-                        "posted_at": posted_at,
-                    })
-            
-            # Add this page's new posts to the global list
-            # We process them from oldest to newest (by reversing) so that if there are 2 new posts,
-            # we publish the older one first, then the newer one.
-            new_posts.extend(reversed(page_new_posts))
+        new_posts.reverse()
 
-        except Exception as e:
-            log.error(f"Failed to scrape {page_url}: {e}")
-
-    # Notice we DO NOT save 'seen' here anymore.
-    # We wait for main.py to successfully publish them, then main.py calls mark_post_seen().
+    except Exception as e:
+        error_str = str(e).lower()
+        if any(phrase in error_str for phrase in APIFY_LIMIT_PHRASES):
+            log.warning(
+                "⚠️  Apify monthly free-tier limit reached. "
+                "The pipeline will resume automatically when credits reset on the 1st of next month."
+            )
+        else:
+            log.error(f"Scrape failed: {e}")
 
     log.info(f"Found {len(new_posts)} new image post(s)")
     return new_posts
