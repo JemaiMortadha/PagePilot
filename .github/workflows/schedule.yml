@@ -13,35 +13,31 @@ on:
 jobs:
   run-pipeline:
     runs-on: ubuntu-latest
-    
+    # Give the job permission to commit back to the repo
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+        with:
+          # Use a token that allows pushing back to the repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           cache: 'pip'
-          
+
       - name: Install dependencies
         run: |
           sudo apt-get install -y fonts-dejavu-core
           pip install -r requirements.txt
-          
-      - name: Restore cache (Seen posts and usage stats)
-        uses: actions/cache@v3
-        with:
-          path: |
-            seen_posts.json
-            usage_stats.json
-          key: state-${{ github.run_id }}
-          restore-keys: |
-            state-
-            
+
       - name: Run Initial Setup
         run: python setup.py
-        
+
       - name: Run PagePilot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -55,12 +51,13 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         run: python main.py --once
-        
-      - name: Save state cache (Seen posts and usage stats)
+
+      - name: Commit updated state back to repo
         if: always()
-        uses: actions/cache/save@v3
-        with:
-          path: |
-            seen_posts.json
-            usage_stats.json
-          key: state-${{ github.run_id }}
+        run: |
+          git config user.name "PagePilot Bot"
+          git config user.email "pagepilot-bot@users.noreply.github.com"
+          git add seen_posts.json usage_stats.json
+          # Only commit if there are actual changes (avoids empty commits)
+          git diff --staged --quiet || git commit -m "chore: update seen_posts and usage_stats [skip ci]"
+          git push
